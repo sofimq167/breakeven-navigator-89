@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { sendChatMessage, runAnalysis, type AnalysisResults } from "@/lib/api";
 
 /* ============================================================
    BreakEven — single-file wizard
@@ -507,39 +508,26 @@ const StepChat = ({ business, industryName, industryIcon, onNext, onBack }: any)
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages, typing]);
 
-  const followUps = useMemo(() => {
-    // Adapt by industry id (rough match)
-    const id = INDUSTRIES.find((i) => i.name === industryName)?.id;
-    const base = [
-      { check: "product", q: "Perfecto. ¿Cuál es tu costo aproximado por unidad o servicio?" },
-      { check: "price", q: id === "rest"
-        ? "Entendido. ¿Por qué canales venderás? (local, delivery, eventos)"
-        : id === "tech"
-        ? "Genial. ¿Tu modelo será suscripción, one-time o freemium?"
-        : "Bien. ¿Qué canales de venta planeas usar?" },
-      { check: "cost", q: "Anotado. ¿Cuál es el tamaño aproximado de tu mercado objetivo?" },
-      { check: "channel", q: "Excelente. Última pregunta: ¿cuántos clientes potenciales estimas en tu zona?" },
-      { check: "market", q: "Perfecto, tengo todo lo que necesito. Puedes iniciar el análisis cuando quieras desde el panel izquierdo. 🎯" },
-    ];
-    return base;
-  }, [industryName]);
-
-  const send = () => {
+  const send = async () => {
     if (!input.trim()) return;
     const userMsg: Msg = { id: crypto.randomUUID(), role: "user", text: input.trim(), ts: timestamp() };
     setMessages((m) => [...m, userMsg]);
     setInput("");
     setTyping(true);
 
-    setTimeout(() => {
+    try {
+      const apiMessages = [...messages, userMsg].map((m) => ({ role: m.role, text: m.text }));
+      const res = await sendChatMessage(business, industryName, apiMessages, turn);
       setTyping(false);
-      const next = followUps[turn];
-      if (next) {
-        setConfirmed((c) => Array.from(new Set([...c, next.check])));
-        setMessages((m) => [...m, { id: crypto.randomUUID(), role: "bot", text: next.q, ts: timestamp() }]);
-        setTurn((t) => t + 1);
+      if (res.confirmedItem) {
+        setConfirmed((c) => Array.from(new Set([...c, res.confirmedItem!])));
       }
-    }, 1200);
+      setMessages((m) => [...m, { id: crypto.randomUUID(), role: "bot", text: res.message, ts: timestamp() }]);
+      setTurn((t) => t + 1);
+    } catch {
+      setTyping(false);
+      setMessages((m) => [...m, { id: crypto.randomUUID(), role: "bot", text: "Lo siento, hubo un error. ¿Puedes intentarlo de nuevo?", ts: timestamp() }]);
+    }
   };
 
   const allDone = confirmed.length >= REQUIRED_CHECKLIST.length;
@@ -592,7 +580,7 @@ const StepChat = ({ business, industryName, industryIcon, onNext, onBack }: any)
 
           {allDone && (
             <button
-              onClick={onNext}
+              onClick={() => onNext(messages.map((m) => ({ role: m.role, text: m.text })))}
               className="pulse-glow flex items-center justify-center gap-2 w-full py-3.5 rounded-lg bg-primary text-primary-foreground font-medium hover:brightness-110 transition"
             >
               Iniciar análisis <Icon name="arrow" className="w-4 h-4" />
@@ -662,17 +650,18 @@ const StepChat = ({ business, industryName, industryIcon, onNext, onBack }: any)
 
 // -------------------- Step 4: Analysis --------------------
 
-const StepAnalysis = ({ business, industryName, onComplete, onBack }: any) => {
+const StepAnalysis = ({ business, industryName, chatMessages, onComplete, onBack }: any) => {
   const [stageIdx, setStageIdx] = useState(0);
   const [progress, setProgress] = useState(0);
   const totalDuration = useMemo(() => PIPELINE_STAGES.reduce((s, x) => s + x.duration, 0), []);
+  const analysisResultsRef = useRef<AnalysisResults | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     let elapsed = 0;
     const startTimer = (i: number) => {
       if (cancelled || i >= PIPELINE_STAGES.length) {
-        setTimeout(() => !cancelled && onComplete(), 400);
+        setTimeout(() => !cancelled && onComplete(analysisResultsRef.current), 400);
         return;
       }
       setStageIdx(i);
@@ -694,6 +683,12 @@ const StepAnalysis = ({ business, industryName, onComplete, onBack }: any) => {
     startTimer(0);
     return () => { cancelled = true; };
   }, [onComplete, totalDuration]);
+
+  useEffect(() => {
+    runAnalysis(business, industryName, chatMessages || []).then((results) => {
+      analysisResultsRef.current = results;
+    }).catch(() => {});
+  }, []);
 
   return (
     <section className="step-enter pt-32 pb-20 px-6 max-w-3xl mx-auto min-h-screen flex flex-col">
@@ -844,7 +839,8 @@ const ArcGauge = ({ value }: { value: number }) => {
   );
 };
 
-const StepResults = ({ business, onWhatIf }: any) => {
+const StepResults = ({ business, results: rawResults, onWhatIf }: any) => {
+  const results = rawResults ?? mockResults;
   const [selectedStep, setSelectedStep] = useState<number | null>(null);
   const [conservativeOpen, setConservativeOpen] = useState(false);
 
@@ -875,7 +871,7 @@ const StepResults = ({ business, onWhatIf }: any) => {
         <div className="col-span-12 lg:col-span-3 lg:max-h-[calc(100vh-180px)] lg:overflow-y-auto pr-2">
           <h2 className="font-display text-2xl mb-4">Plan de acción</h2>
           <div className="space-y-3">
-            {mockResults.steps.map((s, i) => (
+            {results.steps.map((s, i) => (
               <article
                 key={i}
                 onClick={() => setSelectedStep(i)}
@@ -914,15 +910,15 @@ const StepResults = ({ business, onWhatIf }: any) => {
               <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-secondary" style={{ borderTop: "1px dashed" }} /> Capital restante</span>
             </div>
             <ProjectionChart
-              capital={mockResults.capitalCurve}
-              revenue={mockResults.revenueCurve}
-              breakEvenPeriod={mockResults.periodsToBreakEven}
+              capital={results.capitalCurve}
+              revenue={results.revenueCurve}
+              breakEvenPeriod={results.periodsToBreakEven}
               highlightStep={selectedStep}
             />
             <div className="mt-6 pt-4 border-t border-border">
               <p className="text-xs text-muted-foreground mb-2">Línea de tiempo</p>
               <div className="flex items-center gap-2">
-                {mockResults.steps.map((_, i) => (
+                {results.steps.map((_, i) => (
                   <button
                     key={i}
                     onClick={() => setSelectedStep(i)}
@@ -947,16 +943,16 @@ const StepResults = ({ business, onWhatIf }: any) => {
 
           <MetricCard label="periodos estimados" delay={0}>
             <div className="font-mono text-6xl text-primary leading-none">
-              <CountUp value={mockResults.periodsToBreakEven} />
+              <CountUp value={results.periodsToBreakEven} />
             </div>
             <div className="text-xs text-muted-foreground mt-1">Periodos al equilibrio</div>
           </MetricCard>
 
           <MetricCard label="eficiencia de capital" delay={100}>
             <div className="flex items-end justify-between">
-              <ArcGauge value={mockResults.capitalEfficiency} />
+              <ArcGauge value={results.capitalEfficiency} />
               <div className="font-mono text-4xl text-primary -mb-1">
-                <CountUp value={mockResults.capitalEfficiency} suffix="%" />
+                <CountUp value={results.capitalEfficiency} suffix="%" />
               </div>
             </div>
           </MetricCard>
@@ -967,15 +963,15 @@ const StepResults = ({ business, onWhatIf }: any) => {
                 <Icon name="store" className="w-5 h-5" />
               </div>
               <div className="min-w-0">
-                <div className="font-medium text-sm truncate">{mockResults.optimalChannel}</div>
-                <div className="font-mono text-xs text-muted-foreground">Conv. {mockResults.channelConversionRate}</div>
+                <div className="font-medium text-sm truncate">{results.optimalChannel}</div>
+                <div className="font-mono text-xs text-muted-foreground">Conv. {results.channelConversionRate}</div>
               </div>
             </div>
           </MetricCard>
 
           <MetricCard label="rango de precio" delay={300}>
             <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">{mockResults.priceRange}</span>
+              <span className="text-sm font-medium">{results.priceRange}</span>
               <Icon name="trend" className="w-5 h-5 text-primary" />
             </div>
           </MetricCard>
@@ -991,7 +987,7 @@ const StepResults = ({ business, onWhatIf }: any) => {
             </button>
             {conservativeOpen && (
               <div className="px-4 pb-4 space-y-2 fade-up">
-                {mockResults.conservativeSteps.map((s, i) => (
+                {results.conservativeSteps.map((s, i) => (
                   <div key={i} className="text-xs border-l-2 border-neutral-accent/60 pl-3 py-1">
                     <div className="font-mono text-muted-foreground">Periodos {s.period}</div>
                     <div className="font-medium">{s.action}</div>
@@ -1108,6 +1104,8 @@ const Index = () => {
   const [industryId, setIndustryId] = useState("");
   const [customIndustry, setCustomIndustry] = useState("");
   const [showWhatIf, setShowWhatIf] = useState(false);
+  const [chatMessages, setChatMessages] = useState<{ role: "bot" | "user"; text: string }[]>([]);
+  const [analysisResults, setAnalysisResults] = useState<AnalysisResults | null>(null);
 
   const [business, setBusiness] = useState({
     name: "",
@@ -1150,7 +1148,7 @@ const Index = () => {
             business={business}
             industryName={industryName}
             industryIcon={industryIcon}
-            onNext={() => setStep(4)}
+            onNext={(msgs: { role: "bot" | "user"; text: string }[]) => { setChatMessages(msgs); setStep(4); }}
             onBack={() => setStep(2)}
           />
         )}
@@ -1158,13 +1156,15 @@ const Index = () => {
           <StepAnalysis
             business={business}
             industryName={industryName}
-            onComplete={() => setStep(5)}
+            chatMessages={chatMessages}
+            onComplete={(results: AnalysisResults | null) => { setAnalysisResults(results); setStep(5); }}
             onBack={() => setStep(3)}
           />
         )}
         {step === 5 && (
           <StepResults
             business={business}
+            results={analysisResults}
             onWhatIf={() => setShowWhatIf(true)}
           />
         )}

@@ -1,0 +1,27 @@
+services:
+  backend:
+    build: ./backend
+    container_name: breakeven-backend
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./backend/src:/app/src
+    env_file:
+      - ./backend/.env
+    environment:
+      - NODE_ENV=development
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: breakeven-frontend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    depends_on:
+      - backend
+    environment:
+      - NODE_ENV=development
+    restart: unless-stopped

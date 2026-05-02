@@ -5,10 +5,20 @@ import { BusinessData, ChatMessage, AnalysisResults } from "../types.js";
 const router = Router();
 const client = new Anthropic();
 
+type WhatIfParams = {
+  capital: string;
+  fixedCosts: string;
+  variableCost: string;
+  price: string;
+  channels: string[];
+  market: string;
+};
+
 type AnalyzeBody = {
   business: BusinessData;
   industryName: string;
   messages: ChatMessage[];
+  whatIf?: WhatIfParams;
 };
 
 const SYSTEM_PROMPT = `Eres un experto en análisis financiero de punto de equilibrio para pymes latinoamericanas.
@@ -49,13 +59,27 @@ Responde ÚNICAMENTE con un objeto JSON válido (sin markdown, sin texto adicion
 Los "steps" deben tener entre 4 y 6 elementos. IMPORTANTE: nunca uses datos de restaurantes u otros sectores si el negocio es diferente.`;
 
 router.post("/", async (req: Request, res: Response) => {
-  const { business, industryName, messages } = req.body as AnalyzeBody;
+  const { business, industryName, messages, whatIf } = req.body as AnalyzeBody;
+
+  if (!business?.name || !industryName || !Array.isArray(messages)) {
+    return res.status(400).json({ error: "Faltan campos requeridos: business, industryName, messages" });
+  }
 
   console.log("[analyze] messages recibidos:", messages.length, "| industria:", industryName, "| capital:", business.capital);
 
   const conversationSummary = messages
     .map((m) => `${m.role === "user" ? "Usuario" : "Asistente"}: ${m.text}`)
     .join("\n");
+
+  const whatIfNote = whatIf
+    ? `\n\nSCENARIO WHAT-IF — usa estos parámetros en lugar de los de la conversación:
+Capital inicial: ${whatIf.capital}
+Costos fijos mensuales: ${whatIf.fixedCosts}
+Costo variable por unidad: ${whatIf.variableCost}
+Precio de venta: ${whatIf.price}
+Canales: ${whatIf.channels.join(", ")}
+Tamaño del mercado: ${whatIf.market}`
+    : "";
 
   const userPrompt = `Negocio: "${business.name}"
 Ciudad: ${business.city}
@@ -64,14 +88,16 @@ Capital inicial: ${business.capital} ${business.currency}
 Experiencia del emprendedor: ${business.experience}
 
 Conversación de onboarding donde se recopiló información del negocio:
-${conversationSummary}
+${conversationSummary}${whatIfNote}
 
 Genera el análisis de punto de equilibrio completo.`;
 
   const stream = client.messages.stream({
     model: "claude-sonnet-4-6",
     max_tokens: 2048,
-    system: SYSTEM_PROMPT,
+    system: [
+      { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+    ],
     messages: [{ role: "user", content: userPrompt }],
   });
 

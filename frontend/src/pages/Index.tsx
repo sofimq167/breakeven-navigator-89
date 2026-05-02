@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { sendChatMessage, runAnalysis, type AnalysisResults } from "@/lib/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { sendChatMessage, runAnalysis, type AnalysisResults, type WhatIfParams } from "@/lib/api";
 
 /* ============================================================
    BreakEven — single-file wizard
@@ -174,6 +174,8 @@ const Icon = ({ name, className = "w-6 h-6" }: { name: string; className?: strin
       return (<svg {...common}><path d="M3 9l2-5h14l2 5M3 9v11h18V9M3 9c0 2 2 3 3 3s3-1 3-3 2 3 3 3 3-1 3-3 2 3 3 3 3-1 3-3" /></svg>);
     case "trend":
       return (<svg {...common} strokeWidth={2}><path d="M3 17l6-6 4 4 8-8M14 7h7v7" /></svg>);
+    case "download":
+      return (<svg {...common} strokeWidth={2}><path d="M12 3v13M7 11l5 5 5-5M3 19h18" /></svg>);
     default:
       return null;
   }
@@ -509,18 +511,20 @@ const StepChat = ({ business, industryName, industryIcon, onNext, onBack }: any)
   }, [messages, typing]);
 
   const send = async () => {
-    if (!input.trim()) return;
-    const userMsg: Msg = { id: crypto.randomUUID(), role: "user", text: input.trim(), ts: timestamp() };
-    setMessages((m) => [...m, userMsg]);
+    if (!input.trim() || typing) return;
+    const text = input.trim();
+    const userMsg: Msg = { id: crypto.randomUUID(), role: "user", text, ts: timestamp() };
+    const snapshot = [...messages, userMsg];
+    setMessages(snapshot);
     setInput("");
     setTyping(true);
 
     try {
-      const apiMessages = [...messages, userMsg].map((m) => ({ role: m.role, text: m.text }));
+      const apiMessages = snapshot.map((m) => ({ role: m.role, text: m.text }));
       const res = await sendChatMessage(business, industryName, apiMessages, turn);
       setTyping(false);
       if (res.confirmedItem) {
-        setConfirmed((c) => Array.from(new Set([...c, res.confirmedItem!])));
+        setConfirmed((c) => c.includes(res.confirmedItem!) ? c : [...c, res.confirmedItem!]);
       }
       setMessages((m) => [...m, { id: crypto.randomUUID(), role: "bot", text: res.message, ts: timestamp() }]);
       setTurn((t) => t + 1);
@@ -628,14 +632,14 @@ const StepChat = ({ business, industryName, industryIcon, onNext, onBack }: any)
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && send()}
-                placeholder="Escribe tu respuesta..."
-                disabled={allDone}
+                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send()}
+                placeholder={allDone ? "Conversación completa — inicia el análisis" : "Escribe tu respuesta..."}
+                disabled={allDone || typing}
                 className="flex-1 px-4 py-3 rounded-lg bg-card border border-border focus:border-primary focus:outline-none transition-colors disabled:opacity-50"
               />
               <button
                 onClick={send}
-                disabled={!input.trim()}
+                disabled={!input.trim() || typing || allDone}
                 className="px-4 rounded-lg bg-primary text-primary-foreground hover:brightness-110 disabled:opacity-30 disabled:cursor-not-allowed transition flex items-center justify-center"
               >
                 <Icon name="send" className="w-5 h-5" />
@@ -650,18 +654,28 @@ const StepChat = ({ business, industryName, industryIcon, onNext, onBack }: any)
 
 // -------------------- Step 4: Analysis --------------------
 
-const StepAnalysis = ({ business, industryName, chatMessages, onComplete, onBack }: any) => {
+const StepAnalysis = ({ business, industryName, chatMessages, whatIfParams, onComplete, onBack }: any) => {
   const [stageIdx, setStageIdx] = useState(0);
   const [progress, setProgress] = useState(0);
   const totalDuration = useMemo(() => PIPELINE_STAGES.reduce((s, x) => s + x.duration, 0), []);
-  const analysisResultsRef = useRef<AnalysisResults | null>(null);
+  const [animDone, setAnimDone] = useState(false);
+  const [apiResult, setApiResult] = useState<AnalysisResults | null | "pending">("pending");
+  const firedRef = useRef(false);
+
+  // Only advance to results when BOTH animation and API are done; fire once
+  useEffect(() => {
+    if (animDone && apiResult !== "pending" && !firedRef.current) {
+      firedRef.current = true;
+      onComplete(apiResult);
+    }
+  }, [animDone, apiResult, onComplete]);
 
   useEffect(() => {
     let cancelled = false;
     let elapsed = 0;
     const startTimer = (i: number) => {
       if (cancelled || i >= PIPELINE_STAGES.length) {
-        setTimeout(() => !cancelled && onComplete(analysisResultsRef.current), 400);
+        setTimeout(() => { if (!cancelled) setAnimDone(true); }, 400);
         return;
       }
       setStageIdx(i);
@@ -682,12 +696,12 @@ const StepAnalysis = ({ business, industryName, chatMessages, onComplete, onBack
     };
     startTimer(0);
     return () => { cancelled = true; };
-  }, [onComplete, totalDuration]);
+  }, [totalDuration]);
 
   useEffect(() => {
-    runAnalysis(business, industryName, chatMessages || []).then((results) => {
-      analysisResultsRef.current = results;
-    }).catch(() => {});
+    runAnalysis(business, industryName, chatMessages || [], whatIfParams)
+      .then((results) => setApiResult(results))
+      .catch(() => setApiResult(null));
   }, []);
 
   return (
@@ -743,9 +757,13 @@ const StepAnalysis = ({ business, industryName, chatMessages, onComplete, onBack
       </div>
 
       <div className="text-center mb-auto fade-up" key={stageIdx}>
-        <p className="text-lg text-muted-foreground">
-          {stageDescription(PIPELINE_STAGES[stageIdx]?.id || "", industryName)}
-        </p>
+        {animDone && apiResult === "pending" ? (
+          <p className="text-lg text-muted-foreground">Esperando respuesta del análisis...</p>
+        ) : (
+          <p className="text-lg text-muted-foreground">
+            {stageDescription(PIPELINE_STAGES[stageIdx]?.id || "", industryName)}
+          </p>
+        )}
       </div>
 
       <div className="fixed bottom-0 left-0 right-0 h-0.5 bg-border">
@@ -839,10 +857,71 @@ const ArcGauge = ({ value }: { value: number }) => {
   );
 };
 
-const StepResults = ({ business, results: rawResults, onWhatIf }: any) => {
-  const results = rawResults ?? mockResults;
+const exportReport = (business: any, results: any) => {
+  const lines: string[] = [
+    `INFORME BREAKEVEN — ${business.name}`,
+    `${"=".repeat(50)}`,
+    `Ciudad: ${business.city}`,
+    `Capital inicial: ${currencySymbol(business.currency)}${formatNumber(business.capital)} ${business.currency}`,
+    `Experiencia: ${business.experience}`,
+    "",
+    `RESUMEN`,
+    `${"─".repeat(50)}`,
+    `Periodos al punto de equilibrio: ${results.periodsToBreakEven}`,
+    `Eficiencia de capital: ${results.capitalEfficiency}%`,
+    `Canal óptimo: ${results.optimalChannel} (Conv. ${results.channelConversionRate})`,
+    `Rango de precio: ${results.priceRange}`,
+    "",
+    `PLAN DE ACCIÓN`,
+    `${"─".repeat(50)}`,
+  ];
+  results.steps.forEach((s: any, i: number) => {
+    lines.push(`${i + 1}. [Periodos ${s.period}] ${s.action}`);
+    lines.push(`   Razonamiento: ${s.reasoning}`);
+    lines.push(`   Resultado esperado: ${s.outcome}`);
+    if (s.risk) lines.push(`   Riesgo: ${s.risk}`);
+    lines.push("");
+  });
+  lines.push(`RUTA CONSERVADORA`, `${"─".repeat(50)}`);
+  results.conservativeSteps.forEach((s: any) => {
+    lines.push(`[Periodos ${s.period}] ${s.action} → ${s.outcome}`);
+  });
+  lines.push("", `Generado por BreakEven el ${new Date().toLocaleDateString("es-CO")}`);
+
+  const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `breakeven-${business.name.replace(/\s+/g, "-").toLowerCase()}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+const StepResults = ({ business, results: rawResults, onWhatIf, onRetry }: any) => {
   const [selectedStep, setSelectedStep] = useState<number | null>(null);
   const [conservativeOpen, setConservativeOpen] = useState(false);
+
+  if (!rawResults) {
+    return (
+      <section className="step-enter pt-32 pb-20 px-6 max-w-xl mx-auto min-h-screen flex flex-col items-center justify-center text-center">
+        <div className="w-16 h-16 rounded-full bg-destructive/10 border border-destructive/30 flex items-center justify-center mb-6">
+          <Icon name="x" className="w-7 h-7 text-destructive" />
+        </div>
+        <h1 className="font-display text-4xl mb-3">El análisis falló</h1>
+        <p className="text-muted-foreground mb-8">
+          Hubo un problema al conectar con el servidor de análisis. Revisa tu conexión o inténtalo de nuevo.
+        </p>
+        <button
+          onClick={onRetry}
+          className="flex items-center gap-2 px-6 py-3 rounded-lg bg-primary text-primary-foreground hover:brightness-110 glow-primary transition"
+        >
+          <Icon name="arrow" className="w-4 h-4" /> Reintentar análisis
+        </button>
+      </section>
+    );
+  }
+
+  const results = rawResults;
 
   return (
     <section className="step-enter pt-20 min-h-screen flex flex-col">
@@ -856,12 +935,21 @@ const StepResults = ({ business, results: rawResults, onWhatIf }: any) => {
           <div className="hidden md:block text-sm font-medium">
             Tu ruta al punto de equilibrio está lista
           </div>
-          <button
-            onClick={onWhatIf}
-            className="px-4 py-2 rounded-lg bg-secondary/15 border border-secondary/40 text-secondary hover:bg-secondary/25 hover:scale-[1.02] transition text-sm"
-          >
-            ¿Qué pasa si...?
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => exportReport(business, results)}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-muted/20 border border-border hover:bg-muted/40 hover:scale-[1.02] transition text-sm"
+            >
+              <Icon name="download" className="w-4 h-4" />
+              Exportar informe
+            </button>
+            <button
+              onClick={onWhatIf}
+              className="px-4 py-2 rounded-lg bg-secondary/15 border border-secondary/40 text-secondary hover:bg-secondary/25 hover:scale-[1.02] transition text-sm"
+            >
+              ¿Qué pasa si...?
+            </button>
+          </div>
         </div>
         <div className="h-px bg-primary/40" />
       </div>
@@ -930,7 +1018,7 @@ const StepResults = ({ business, results: rawResults, onWhatIf }: any) => {
                   />
                 ))}
                 <span className="ml-auto text-xs font-mono text-muted-foreground">
-                  {selectedStep != null ? `Paso ${selectedStep + 1} • Periodos ${mockResults.steps[selectedStep].period}` : "Toca un punto"}
+                  {selectedStep != null ? `Paso ${selectedStep + 1} • Periodos ${results.steps[selectedStep].period}` : "Toca un punto"}
                 </span>
               </div>
             </div>
@@ -1076,7 +1164,7 @@ const WhatIfModal = ({ business, onClose, onReanalyze }: any) => {
           <button onClick={onClose} className="flex-1 py-3 rounded-lg border border-border hover:bg-muted/20 transition">
             Cancelar
           </button>
-          <button onClick={onReanalyze} className="flex-1 py-3 rounded-lg bg-primary text-primary-foreground hover:brightness-110 hover:scale-[1.01] transition glow-primary">
+          <button onClick={() => onReanalyze(params)} className="flex-1 py-3 rounded-lg bg-primary text-primary-foreground hover:brightness-110 hover:scale-[1.01] transition glow-primary">
             Volver a analizar
           </button>
         </div>
@@ -1106,6 +1194,7 @@ const Index = () => {
   const [showWhatIf, setShowWhatIf] = useState(false);
   const [chatMessages, setChatMessages] = useState<{ role: "bot" | "user"; text: string }[]>([]);
   const [analysisResults, setAnalysisResults] = useState<AnalysisResults | null>(null);
+  const [whatIfParams, setWhatIfParams] = useState<WhatIfParams | undefined>(undefined);
 
   const [business, setBusiness] = useState({
     name: "",
@@ -1118,6 +1207,11 @@ const Index = () => {
   const selectedIndustry = INDUSTRIES.find((i) => i.id === industryId);
   const industryName = customIndustry || selectedIndustry?.name || "";
   const industryIcon = selectedIndustry?.icon || "sparkle";
+
+  const handleAnalysisComplete = useCallback((results: AnalysisResults | null) => {
+    setAnalysisResults(results);
+    setStep(5);
+  }, []);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -1157,7 +1251,8 @@ const Index = () => {
             business={business}
             industryName={industryName}
             chatMessages={chatMessages}
-            onComplete={(results: AnalysisResults | null) => { setAnalysisResults(results); setStep(5); }}
+            whatIfParams={whatIfParams}
+            onComplete={handleAnalysisComplete}
             onBack={() => setStep(3)}
           />
         )}
@@ -1166,6 +1261,7 @@ const Index = () => {
             business={business}
             results={analysisResults}
             onWhatIf={() => setShowWhatIf(true)}
+            onRetry={() => { setAnalysisResults(null); setStep(4); }}
           />
         )}
       </main>
@@ -1174,7 +1270,7 @@ const Index = () => {
         <WhatIfModal
           business={business}
           onClose={() => setShowWhatIf(false)}
-          onReanalyze={() => { setShowWhatIf(false); setStep(4); }}
+          onReanalyze={(params: WhatIfParams) => { setWhatIfParams(params); setShowWhatIf(false); setStep(4); }}
         />
       )}
     </div>

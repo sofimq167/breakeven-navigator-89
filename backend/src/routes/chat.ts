@@ -36,6 +36,10 @@ CONFIRMED:none`;
 router.post("/", async (req: Request, res: Response) => {
   const { business, industryName, messages, turn } = req.body as ChatBody;
 
+  if (!business?.name || !industryName || !Array.isArray(messages)) {
+    return res.status(400).json({ error: "Faltan campos requeridos: business, industryName, messages" });
+  }
+
   // Drop leading bot messages — Anthropic requires the first message to be from "user"
   const trimmed = [...messages];
   while (trimmed.length > 0 && trimmed[0].role !== "user") trimmed.shift();
@@ -54,7 +58,10 @@ router.post("/", async (req: Request, res: Response) => {
   const stream = client.messages.stream({
     model: "claude-sonnet-4-6",
     max_tokens: 400,
-    system: SYSTEM_PROMPT + "\n\n" + contextNote,
+    system: [
+      { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+      { type: "text", text: contextNote },
+    ],
     messages: anthropicMessages,
   });
 

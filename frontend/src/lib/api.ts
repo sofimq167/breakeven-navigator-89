@@ -27,6 +27,15 @@ export type ConservativeStep = {
   outcome: string;
 };
 
+export type WhatIfParams = {
+  capital: string;
+  fixedCosts: string;
+  variableCost: string;
+  price: string;
+  channels: string[];
+  market: string;
+};
+
 export type AnalysisResults = {
   periodsToBreakEven: number;
   capitalEfficiency: number;
@@ -57,12 +66,13 @@ export async function sendChatMessage(
 export async function runAnalysis(
   business: BusinessData,
   industryName: string,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  whatIf?: WhatIfParams
 ): Promise<AnalysisResults> {
   const res = await fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ business, industryName, messages }),
+    body: JSON.stringify({ business, industryName, messages, whatIf }),
   });
   if (!res.ok) throw new Error("Error en el análisis");
   return res.json();

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="28" height="28">
+  <!-- dark background so it's visible in browser tabs -->
+  <rect width="28" height="28" rx="6" fill="#0f1117"/>
+  <!-- outer: bg-primary/15 fill + border-primary/40 stroke -->
+  <rect x="0.5" y="0.5" width="27" height="27" rx="6"
+        fill="rgba(0,212,170,0.15)"
+        stroke="rgba(0,212,170,0.40)"
+        stroke-width="1"/>
+  <!-- inner: bg-primary -->
+  <rect x="8" y="8" width="12" height="12" rx="2"
+        fill="#00D4AA"/>
+</svg>

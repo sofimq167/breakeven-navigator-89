@@ -48,25 +48,41 @@ router.post("/", async (req: Request, res: Response) => {
     return res.json({ message: `¿Cuál es el producto o servicio principal que ofrece ${business.name}?`, confirmedItem: null });
   }
 
-  const anthropicMessages: Anthropic.MessageParam[] = trimmed.map((m) => ({
-    role: m.role === "user" ? "user" : "assistant",
-    content: m.text,
-  }));
+  const anthropicMessages: Anthropic.MessageParam[] = trimmed.flatMap((m) => {
+    if (typeof m.text !== "string") return [];
+    const text = m.text.trim();
+    if (!text) return [];
+
+    return [{
+      role: m.role === "user" ? "user" : "assistant",
+      content: text,
+    }];
+  });
+
+  if (anthropicMessages.length === 0) {
+    return res.json({ message: `¿Cuál es el producto o servicio principal que ofrece ${business.name}?`, confirmedItem: null });
+  }
 
   const contextNote = `Contexto del negocio: "${business.name}" en ${business.city}, industria "${industryName}", capital inicial ${business.capital} ${business.currency}, experiencia: ${business.experience}.`;
 
-  const stream = client.messages.stream({
-    model: "claude-sonnet-4-6",
-    max_tokens: 400,
-    system: [
-      { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-      { type: "text", text: contextNote },
-    ],
-    messages: anthropicMessages,
-  });
+  let raw = "";
+  try {
+    const stream = client.messages.stream({
+      model: "claude-sonnet-4-6",
+      max_tokens: 400,
+      system: [
+        { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+        { type: "text", text: contextNote },
+      ],
+      messages: anthropicMessages,
+    });
 
-  const response = await stream.finalMessage();
-  const raw = response.content[0].type === "text" ? response.content[0].text : "";
+    const response = await stream.finalMessage();
+    raw = response.content[0]?.type === "text" ? response.content[0].text : "";
+  } catch (error) {
+    console.error("[chat] Error al consultar Anthropic:", error);
+    return res.status(502).json({ error: "Error al consultar el modelo" });
+  }
 
   // Extract CONFIRMED tag and clean message
   const VALID_ITEMS = ["product", "price", "cost", "channel", "market"];

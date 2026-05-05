@@ -8,13 +8,24 @@ const app = express();
 const PORT = process.env.PORT ?? 3001;
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(",")
-  : ["http://localhost:5173", "http://localhost:4173"];
+  ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
+  : ["http://localhost:5173", "http://localhost:4173", "http://localhost:8080", "http://127.0.0.1:8080"];
+
+const localhostOriginRegex = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 
 app.use(cors({
   origin: (origin, cb) => {
-    if (!origin || allowedOrigins.includes(origin)) cb(null, true);
-    else cb(new Error("Not allowed by CORS"));
+    if (!origin) {
+      cb(null, true);
+      return;
+    }
+
+    if (allowedOrigins.includes(origin) || localhostOriginRegex.test(origin)) {
+      cb(null, true);
+      return;
+    }
+
+    cb(new Error("Not allowed by CORS"));
   },
 }));
 app.use(express.json());

@@ -92,18 +92,24 @@ ${conversationSummary}${whatIfNote}
 
 Genera el análisis de punto de equilibrio completo.`;
 
-  const stream = client.messages.stream({
-    model: "claude-sonnet-4-6",
-    max_tokens: 2048,
-    system: [
-      { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-    ],
-    messages: [{ role: "user", content: userPrompt }],
-  });
+  let raw = "";
+  try {
+    const stream = client.messages.stream({
+      model: "claude-sonnet-4-6",
+      max_tokens: 2048,
+      system: [
+        { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+      ],
+      messages: [{ role: "user", content: userPrompt }],
+    });
 
-  const response = await stream.finalMessage();
-  const textBlock = response.content.find((b) => b.type === "text");
-  const raw = textBlock?.type === "text" ? textBlock.text : "";
+    const response = await stream.finalMessage();
+    const textBlock = response.content.find((b) => b.type === "text");
+    raw = textBlock?.type === "text" ? textBlock.text : "";
+  } catch (error) {
+    console.error("[analyze] Error al consultar Anthropic:", error);
+    return res.status(502).json({ error: "Error al consultar el modelo" });
+  }
 
   let results: AnalysisResults;
   try {
